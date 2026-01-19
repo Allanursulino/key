@@ -6,144 +6,171 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Configuração de CORS (Permite que o Netlify e o Roblox conversem com o servidor)
-app.use(cors({
-    origin: '*', // Em produção, mude isso para o link do seu site no Netlify
-    methods: ['GET', 'POST']
-}));
+app.use(cors({ origin: '*' }));
 app.use(bodyParser.json());
 
-// --- CONFIGURAÇÕES ---
+app.get('/', (req, res) => res.send("✅ API MultiHub Security v3.0 Online"));
+
+// ----------------------------------------------------------------------
+// CONFIGURAÇÃO DOS LINKS (ATENÇÃO AQUI)
+// ----------------------------------------------------------------------
+// DICA PARA LINKVERTISE/WORK.INK:
+// Eles não aceitam o mesmo link de destino repetido.
+// Para burlar isso, adicione "?v=1", "?v=2" no final do link do seu site.
+//
+// Exemplo de como configurar os DESTINOS lá no painel deles:
+// Link 1 Destino: https://seu-site.netlify.app/?v=1
+// Link 2 Destino: https://seu-site.netlify.app/?v=2
+// (Isso engana o sistema deles, mas carrega seu site igual)
+// ----------------------------------------------------------------------
+
+const LINKS_CONFIG = {
+    workink: [
+        "https://work.ink/28yN/checkpoint-1-multihub", 
+        "https://work.ink/28yN/checkpoint-2-multihub", 
+        "https://work.ink/28yN/checkpoint-3-multihub", 
+        "https://work.ink/28yN/checkpoint-4-multihub", 
+        "https://work.ink/28yN/checkpoint-5-multihub"  
+    ],
+    linkvertise: [
+        "https://link-target.net/1447099/8DDgstCnZENU",
+        "https://link-center.net/1447099/CytW8OAWdGW6",
+        "https://direct-link.net/1447099/3tviY1ZdNi8U",
+        "https://link-center.net/1447099/b0UQDhbVX43z",
+        "https://link-center.net/1447099/fokKbQQgZUij"
+    ]
+};
 const CONFIG = {
-    // Mude para false quando for usar as APIs reais do Work.ink/Linkvertise
-    SIMULATION_MODE: false, 
-    
-    // Senha para você gerar keys lifetime no painel admin
     ADMIN_SECRET: "@Agosto1979", 
-    
-    // SUAS CHAVES DE API (Preencha quando SIMULATION_MODE = false)
-    WORKINK_API_KEY: "11d4311c-fc04-4537-b2ca-db86514b3a99",
-    LINKVERTISE_USER_ID: "1447099"
+    MIN_SECONDS_BETWEEN_CHECKS: 15 // TEMPO MÍNIMO (Anti-Bypass de tempo)
 };
 
-// Banco de dados em memória (Reseta se o servidor reiniciar no plano grátis)
-// Para salvar permanente, precisaria integrar com MongoDB
-let validKeys = {}; 
+// Armazenamento
+let sessions = {}; 
+let validKeys = {};
 
-// --- ROTAS DO SITE (FRONTEND) ---
-
-// 1. Rota para iniciar o processo de Checkpoints
-app.post('/create-checkpoint', (req, res) => {
-    const { provider, hours, checks } = req.body;
+// 1. PROCESSAR CHECKPOINTS (Lógica Blindada)
+app.post('/process-step', (req, res) => {
+    // Agora exigimos um security_token do frontend
+    const { session_id, security_token, provider, hours, target_checks } = req.body;
     
-    // Gera um ID único para essa transação
-    const transactionId = crypto.randomBytes(8).toString('hex');
+    let currentSession = sessions[session_id];
 
-    if (CONFIG.SIMULATION_MODE) {
-        // MODO SIMULAÇÃO: Gera a key direto (útil para testar o site)
-        const mockKey = generateKey(provider === 'workink' ? 'WK' : 'LV', hours);
-        saveKey(mockKey, hours);
+    // --- CENÁRIO 1: USUÁRIO NOVO (INÍCIO) ---
+    if (!currentSession) {
+        // Se o usuário mandou um ID que não existe na memória, resetamos ele
+        const newID = crypto.randomBytes(16).toString('hex');
+        const firstToken = crypto.randomBytes(8).toString('hex'); // Token para validar o passo 1
         
-        // Simula delay de 2 segundos como se fosse o usuário passando pelo link
-        setTimeout(() => {
-            console.log(`[SIMULAÇÃO] Key gerada para ${hours}h: ${mockKey}`);
-        }, 1000);
-
-        return res.json({ 
-            key: mockKey,
-            message: "Modo Simulação Ativado" 
+        sessions[newID] = {
+            provider: provider || 'linkvertise',
+            hours: hours || 24,
+            target_checks: target_checks || 3,
+            current_step: 0,
+            last_check_time: Date.now(),
+            expected_token: firstToken // O servidor espera esse token na próxima volta
+        };
+        
+        return res.json({
+            session_id: newID,
+            security_token: firstToken, // Enviamos o token para o frontend guardar
+            status: "progress",
+            step: 1,
+            total: sessions[newID].target_checks,
+            url: getLink(sessions[newID].provider, 0)
         });
-    } 
+    }
 
-    // MODO REAL (Lógica para integrar APIs)
-    if (provider === 'workink') {
-        // Exemplo: Retorna o link do seu perfil no Work.ink
-        // Você deve configurar o Work.ink para redirecionar de volta com a key
-        return res.json({ 
-            url: `https://work.ink/seu-perfil?custom_id=${transactionId}` 
+    // --- CENÁRIO 2: USUÁRIO TENTANDO BURLAR (TOKEN INVÁLIDO) ---
+    // Se o token que veio não é o que o servidor gerou no passo anterior:
+    if (security_token !== currentSession.expected_token) {
+        return res.json({
+            status: "error",
+            message: "Sessão inválida ou tentativa de bypass detectada. Reinicie."
         });
-    } 
+    }
+
+    // --- CENÁRIO 3: BYPASS DE TEMPO (SPEEDRUN) ---
+    const timeDiff = Date.now() - currentSession.last_check_time;
+    if (timeDiff < (CONFIG.MIN_SECONDS_BETWEEN_CHECKS * 1000)) { 
+        const waitTime = Math.ceil(CONFIG.MIN_SECONDS_BETWEEN_CHECKS - (timeDiff/1000));
+        return res.json({ 
+            session_id: session_id,
+            security_token: security_token, // Mantém o mesmo token
+            status: "wait",
+            message: `Aguarde ${waitTime} segundos para verificar... (Anti-Spam)` 
+        });
+    }
+
+    // --- SUCESSO: AVANÇAR PASSO ---
+    currentSession.current_step++;
+    currentSession.last_check_time = Date.now();
     
-    if (provider === 'linkvertise') {
-        // Exemplo Linkvertise
-        return res.json({ 
-            url: `https://link-to.net/seu-id/${Math.random() * 1000}` 
+    // GERA NOVO TOKEN (Rotação)
+    // Isso impede que o usuário "re-use" a validação anterior
+    const nextToken = crypto.randomBytes(8).toString('hex');
+    currentSession.expected_token = nextToken;
+
+    // VERIFICA SE TERMINOU
+    if (currentSession.current_step >= currentSession.target_checks) {
+        const prefix = currentSession.provider === 'workink' ? 'WK' : 'LV';
+        const key = `MULTI-${prefix}-${currentSession.hours}H-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+        
+        saveKey(key, currentSession.hours);
+        delete sessions[session_id]; // Destrói a sessão para não ser usada de novo
+
+        return res.json({
+            status: "completed",
+            key: key
         });
     }
-});
 
-// 2. Rota do Painel Admin (Gera keys sem passar por links)
-app.post('/admin/generate', (req, res) => {
-    const { hours, adminSecret } = req.body;
-
-    if(adminSecret !== CONFIG.ADMIN_SECRET) {
-        return res.status(403).json({ error: "Senha incorreta!" });
-    }
-
-    // Se hours for > 10000, consideramos Lifetime
-    const prefix = hours > 10000 ? "LIFETIME" : "ADMIN";
-    const key = generateKey(prefix, hours);
-    saveKey(key, hours);
-
-    console.log(`[ADMIN] Nova key gerada: ${key}`);
-    res.json({ success: true, key: key });
-});
-
-// --- ROTAS DO ROBLOX (LUA SCRIPT) ---
-
-// 3. O script Lua chama isso para ver se pode entrar
-app.get('/verify', (req, res) => {
-    const { key, hwid } = req.query;
-
-    if(!key || !validKeys[key]) {
-        return res.json({ valid: false, message: "Key inválida ou inexistente." });
-    }
-
-    const keyData = validKeys[key];
-
-    // Verifica Expiração
-    if(Date.now() > keyData.expiresAt) {
-        delete validKeys[key]; // Remove key velha
-        return res.json({ valid: false, message: "Esta key expirou. Gere uma nova." });
-    }
-
-    // Verifica HWID (Bloqueia compartilhamento de key)
-    if(keyData.hwid && keyData.hwid !== hwid) {
-        return res.json({ valid: false, message: "Key já vinculada a outro PC (HWID)." });
-    }
-
-    // Se for o primeiro uso, vincula o HWID
-    if(!keyData.hwid && hwid) {
-        keyData.hwid = hwid;
-    }
-
-    // Calcula tempo restante
-    const hoursLeft = Math.floor((keyData.expiresAt - Date.now()) / 1000 / 60 / 60);
-
-    return res.json({ 
-        valid: true, 
-        message: "Acesso Autorizado", 
-        timeLeft: `${hoursLeft} horas`
+    // MANDA PRÓXIMO LINK E NOVO TOKEN
+    return res.json({
+        session_id: session_id,
+        security_token: nextToken, // Token novo para o próximo passo
+        status: "progress",
+        step: currentSession.current_step + 1,
+        total: currentSession.target_checks,
+        url: getLink(currentSession.provider, currentSession.current_step)
     });
 });
 
-// --- FUNÇÕES AUXILIARES ---
+// 2. VALIDAÇÃO ROBLOX (Padrão)
+app.get('/verify', (req, res) => {
+    const { key, hwid } = req.query;
+    if(!key || !validKeys[key]) return res.json({ valid: false, message: "Key inválida." });
+    
+    const data = validKeys[key];
+    if(Date.now() > data.expiresAt) {
+        delete validKeys[key];
+        return res.json({ valid: false, message: "Key expirada." });
+    }
+    if(data.hwid && data.hwid !== hwid) return res.json({ valid: false, message: "HWID incompatível." });
+    if(!data.hwid && hwid) data.hwid = hwid;
 
-function generateKey(prefix, hours) {
-    const random = crypto.randomBytes(4).toString('hex').toUpperCase();
-    return `MULTI-${prefix}-${hours}H-${random}`; // Formato: MULTI-WK-24H-A1B2C3D4
+    return res.json({ valid: true, message: "Acesso Permitido" });
+});
+
+app.post('/admin/generate', (req, res) => {
+    const { hours, adminSecret } = req.body;
+    if(adminSecret !== CONFIG.ADMIN_SECRET) return res.status(403).json({ error: "Senha incorreta" });
+    const key = `MULTI-ADMIN-${hours}H-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    saveKey(key, hours);
+    res.json({ success: true, key: key });
+});
+
+function getLink(provider, index) {
+    const links = LINKS_CONFIG[provider] || LINKS_CONFIG['linkvertise'];
+    return links[index] || links[links.length - 1];
 }
 
 function saveKey(key, hours) {
-    const expirationTime = Date.now() + (hours * 60 * 60 * 1000);
     validKeys[key] = {
         createdAt: Date.now(),
-        expiresAt: expirationTime,
-        hwid: null 
+        expiresAt: Date.now() + (hours * 60 * 60 * 1000),
+        hwid: null
     };
 }
 
-// Inicia o servidor
-app.listen(PORT, () => {
-    console.log(`Servidor rodando na porta ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Security Server running on port ${PORT}`));
