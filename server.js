@@ -1,155 +1,212 @@
 const express = require('express');
+const https = require('https'); 
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
+const axios = require('axios'); // Para mandar webhook pro Discord (se der erro instale: npm install axios)
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors({ origin: '*' }));
 app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
-app.get('/', (req, res) => res.send("✅ API MultiHub Security v3.0 Online"));
+app.get('/', (req, res) => res.send("✅ API MultiHub v9.0 (Admin Dashboard + Discord Log)"));
 
-// ----------------------------------------------------------------------
-// CONFIGURAÇÃO DOS LINKS (ATENÇÃO AQUI)
-// ----------------------------------------------------------------------
-// DICA PARA LINKVERTISE/WORK.INK:
-// Eles não aceitam o mesmo link de destino repetido.
-// Para burlar isso, adicione "?v=1", "?v=2" no final do link do seu site.
-//
-// Exemplo de como configurar os DESTINOS lá no painel deles:
-// Link 1 Destino: https://seu-site.netlify.app/?v=1
-// Link 2 Destino: https://seu-site.netlify.app/?v=2
-// (Isso engana o sistema deles, mas carrega seu site igual)
-// ----------------------------------------------------------------------
-
-const LINKS_CONFIG = {
-    workink: [
-        "https://work.ink/28yN/checkpoint-1-multihub", 
-        "https://work.ink/28yN/checkpoint-2-multihub", 
-        "https://work.ink/28yN/checkpoint-3-multihub", 
-        "https://work.ink/28yN/checkpoint-4-multihub", 
-        "https://work.ink/28yN/checkpoint-5-multihub"  
-    ],
-    linkvertise: [
-        "https://link-target.net/1447099/8DDgstCnZENU",
-        "https://link-center.net/1447099/CytW8OAWdGW6",
-        "https://direct-link.net/1447099/3tviY1ZdNi8U",
-        "https://link-center.net/1447099/b0UQDhbVX43z",
-        "https://link-center.net/1447099/fokKbQQgZUij"
-    ]
-};
+// --- CONFIGURAÇÃO ---
 const CONFIG = {
-    ADMIN_SECRET: "@Agosto1979", 
-    MIN_SECONDS_BETWEEN_CHECKS: 15 // TEMPO MÍNIMO (Anti-Bypass de tempo)
+    ADMIN_SECRET: "@Agosto1979", // Mude isso urgente!
+    MIN_SECONDS: 10,
+    BASE_URL: "https://keymultihub.netlify.app/", 
+    WORKINK_API_KEY: "11d4311c-fc04-4537-b2ca-db86514b3a99", // Cole sua API Key do Work.ink
+    
+    // WEBHOOK DISCORD (Fica seguro aqui no servidor)
+    DISCORD_WEBHOOK: "https://discord.com/api/webhooks/1447779601446076450/2a__LtMGYCo6Ga-W_RShmN78ClE3orT2H8doQPeXlD1kf4THroS5AHMbkSWI4UaCINat"
 };
 
-// Armazenamento
+const LOOTLABS_LINKS = [
+    "https://loot-link.com/s?jiG288HG", 
+        "https://lootdest.org/s?FhMcLnzN",
+        "https://loot-link.com/s?bdOhltpA",
+        "https://lootdest.org/s?RU9Ge3Nt",
+        "https://loot-link.com/s?IaoMNEEr"
+];
+
+// --- BANCO DE DADOS (MEMÓRIA) ---
 let sessions = {}; 
 let validKeys = {};
+let blacklistedHWIDs = []; // Lista de HWIDs banidos
 
-// 1. PROCESSAR CHECKPOINTS (Lógica Blindada)
-app.post('/process-step', (req, res) => {
-    // Agora exigimos um security_token do frontend
-    const { session_id, security_token, provider, hours, target_checks } = req.body;
+// --- ROTA DE LOG (ROBLOX -> DISCORD) ---
+app.post('/log-discord', async (req, res) => {
+    const { username, accountAge, hwid, gameId, key } = req.body;
+
+    if (!username || !key) return res.status(400).send("Dados incompletos");
+
+    // Monta a mensagem bonita (Embed)
+    const embed = {
+        title: "🚨 Key Resgatada / Login Efetuado",
+        color: 15158332, // Vermelho
+        fields: [
+            { name: "👤 Usuário", value: username, inline: true },
+            { name: "⏳ Idade da Conta", value: `${accountAge} dias`, inline: true },
+            { name: "🎮 Game ID", value: `${gameId}`, inline: true },
+            { name: "🔑 Key Usada", value: `\`${key}\``, inline: false },
+            { name: "💻 HWID", value: `\`${hwid}\``, inline: false }
+        ],
+        footer: { text: "MultiHub Security System" },
+        timestamp: new Date().toISOString()
+    };
+
+    try {
+        await axios.post(CONFIG.DISCORD_WEBHOOK, { embeds: [embed] });
+        res.json({ success: true });
+    } catch (e) {
+        console.error("Erro ao enviar webhook:", e.message);
+        res.status(500).json({ error: "Falha no envio" });
+    }
+});
+
+// --- API DO PAINEL ADMIN ---
+
+// 1. Listar todas as Keys
+app.post('/admin/list-keys', (req, res) => {
+    if (req.body.adminSecret !== CONFIG.ADMIN_SECRET) return res.status(403).json({ error: "Senha errada" });
     
-    let currentSession = sessions[session_id];
+    // Converte o objeto validKeys para array
+    const list = Object.entries(validKeys).map(([k, v]) => ({
+        key: k,
+        hwid: v.hwid || "Não usado",
+        expires: new Date(v.expiresAt).toLocaleString(),
+        isExpired: Date.now() > v.expiresAt
+    }));
+    
+    res.json({ keys: list, bannedHWIDs: blacklistedHWIDs });
+});
 
-    // --- CENÁRIO 1: USUÁRIO NOVO (INÍCIO) ---
-    if (!currentSession) {
-        // Se o usuário mandou um ID que não existe na memória, resetamos ele
+// 2. Resetar HWID de uma Key
+app.post('/admin/reset-hwid', (req, res) => {
+    const { adminSecret, key } = req.body;
+    if (adminSecret !== CONFIG.ADMIN_SECRET) return res.status(403).json({ error: "Acesso negado" });
+    
+    if (validKeys[key]) {
+        validKeys[key].hwid = null;
+        res.json({ success: true, message: "HWID Resetado com sucesso!" });
+    } else {
+        res.json({ success: false, message: "Key não encontrada" });
+    }
+});
+
+// 3. Banir HWID
+app.post('/admin/ban-hwid', (req, res) => {
+    const { adminSecret, hwid } = req.body;
+    if (adminSecret !== CONFIG.ADMIN_SECRET) return res.status(403).json({ error: "Acesso negado" });
+    
+    if (!blacklistedHWIDs.includes(hwid)) {
+        blacklistedHWIDs.push(hwid);
+    }
+    
+    // Opcional: Deleta keys associadas a esse HWID
+    for (const [key, val] of Object.entries(validKeys)) {
+        if (val.hwid === hwid) delete validKeys[key];
+    }
+
+    res.json({ success: true, message: `HWID ${hwid} foi banido!` });
+});
+
+// 4. Deletar Key
+app.post('/admin/delete-key', (req, res) => {
+    const { adminSecret, key } = req.body;
+    if (adminSecret !== CONFIG.ADMIN_SECRET) return res.status(403).json({ error: "Acesso negado" });
+    
+    if (validKeys[key]) {
+        delete validKeys[key];
+        res.json({ success: true });
+    } else {
+        res.json({ success: false, message: "Key não existe" });
+    }
+});
+
+// --- ROTAS DO USUÁRIO (WEBHOOKS E VERIFY) ---
+
+app.get('/webhook/lootlabs', (req, res) => {
+    const session_id = req.query.custom;
+    if (session_id && sessions[session_id]) {
+        sessions[session_id].verified_by_webhook = true;
+        res.status(200).send("OK");
+    } else {
+        res.status(400).send("ID Inválido");
+    }
+});
+
+app.post('/process-step', async (req, res) => {
+    const { session_id, security_token, received_secret, provider, hours, target_checks } = req.body;
+    
+    if (!session_id || !sessions[session_id]) {
         const newID = crypto.randomBytes(16).toString('hex');
-        const firstToken = crypto.randomBytes(8).toString('hex'); // Token para validar o passo 1
-        
+        const firstToken = crypto.randomBytes(8).toString('hex');
         sessions[newID] = {
-            provider: provider || 'linkvertise',
+            provider: provider || 'lootlabs',
             hours: hours || 24,
             target_checks: target_checks || 3,
             current_step: 0,
             last_check_time: Date.now(),
-            expected_token: firstToken // O servidor espera esse token na próxima volta
+            expected_token: firstToken,
+            verified_by_webhook: false,
+            dynamic_secret: null
         };
-        
-        return res.json({
-            session_id: newID,
-            security_token: firstToken, // Enviamos o token para o frontend guardar
-            status: "progress",
-            step: 1,
-            total: sessions[newID].target_checks,
-            url: getLink(sessions[newID].provider, 0)
-        });
+        const linkUrl = await generateLink(sessions[newID], newID);
+        return res.json({ session_id: newID, security_token: firstToken, status: "progress", step: 1, total: sessions[newID].target_checks, url: linkUrl });
     }
 
-    // --- CENÁRIO 2: USUÁRIO TENTANDO BURLAR (TOKEN INVÁLIDO) ---
-    // Se o token que veio não é o que o servidor gerou no passo anterior:
-    if (security_token !== currentSession.expected_token) {
-        return res.json({
-            status: "error",
-            message: "Sessão inválida ou tentativa de bypass detectada. Reinicie."
-        });
+    let currentSession = sessions[session_id];
+    if (security_token !== currentSession.expected_token) return res.json({ status: "error", message: "Sessão expirada." });
+
+    if (currentSession.provider === 'lootlabs') {
+        if (currentSession.verified_by_webhook !== true) {
+             const timeDiff = Date.now() - currentSession.last_check_time;
+             if (timeDiff < 5000) return res.json({ status: "wait", message: "Aguardando LootLabs..." });
+             return res.json({ status: "denied", message: "LootLabs não confirmou ainda." });
+        }
+    } else {
+        if (!received_secret || received_secret !== currentSession.dynamic_secret) return res.json({ status: "denied", message: "Link inválido!" });
+        const timeDiff = Date.now() - currentSession.last_check_time;
+        if (timeDiff < (CONFIG.MIN_SECONDS * 1000)) return res.json({ status: "wait", message: `Aguarde...` });
     }
 
-    // --- CENÁRIO 3: BYPASS DE TEMPO (SPEEDRUN) ---
-    const timeDiff = Date.now() - currentSession.last_check_time;
-    if (timeDiff < (CONFIG.MIN_SECONDS_BETWEEN_CHECKS * 1000)) { 
-        const waitTime = Math.ceil(CONFIG.MIN_SECONDS_BETWEEN_CHECKS - (timeDiff/1000));
-        return res.json({ 
-            session_id: session_id,
-            security_token: security_token, // Mantém o mesmo token
-            status: "wait",
-            message: `Aguarde ${waitTime} segundos para verificar... (Anti-Spam)` 
-        });
-    }
-
-    // --- SUCESSO: AVANÇAR PASSO ---
     currentSession.current_step++;
     currentSession.last_check_time = Date.now();
+    currentSession.verified_by_webhook = false;
+    currentSession.dynamic_secret = null;
     
-    // GERA NOVO TOKEN (Rotação)
-    // Isso impede que o usuário "re-use" a validação anterior
     const nextToken = crypto.randomBytes(8).toString('hex');
     currentSession.expected_token = nextToken;
 
-    // VERIFICA SE TERMINOU
     if (currentSession.current_step >= currentSession.target_checks) {
-        const prefix = currentSession.provider === 'workink' ? 'WK' : 'LV';
+        const prefix = currentSession.provider === 'lootlabs' ? 'LL' : 'WK';
         const key = `MULTI-${prefix}-${currentSession.hours}H-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-        
         saveKey(key, currentSession.hours);
-        delete sessions[session_id]; // Destrói a sessão para não ser usada de novo
-
-        return res.json({
-            status: "completed",
-            key: key
-        });
+        delete sessions[session_id];
+        return res.json({ status: "completed", key: key });
     }
 
-    // MANDA PRÓXIMO LINK E NOVO TOKEN
-    return res.json({
-        session_id: session_id,
-        security_token: nextToken, // Token novo para o próximo passo
-        status: "progress",
-        step: currentSession.current_step + 1,
-        total: currentSession.target_checks,
-        url: getLink(currentSession.provider, currentSession.current_step)
-    });
+    const nextUrl = await generateLink(currentSession, session_id);
+    return res.json({ session_id: session_id, security_token: nextToken, status: "progress", step: currentSession.current_step + 1, total: currentSession.target_checks, url: nextUrl });
 });
 
-// 2. VALIDAÇÃO ROBLOX (Padrão)
 app.get('/verify', (req, res) => {
     const { key, hwid } = req.query;
-    if(!key || !validKeys[key]) return res.json({ valid: false, message: "Key inválida." });
+    if(!key || !validKeys[key]) return res.json({ valid: false, message: "Key Inválida" });
     
-    const data = validKeys[key];
-    if(Date.now() > data.expiresAt) {
-        delete validKeys[key];
-        return res.json({ valid: false, message: "Key expirada." });
-    }
-    if(data.hwid && data.hwid !== hwid) return res.json({ valid: false, message: "HWID incompatível." });
-    if(!data.hwid && hwid) data.hwid = hwid;
+    // Verifica Blacklist
+    if (blacklistedHWIDs.includes(hwid)) return res.json({ valid: false, message: "Seu HWID está banido!" });
 
-    return res.json({ valid: true, message: "Acesso Permitido" });
+    const data = validKeys[key];
+    if(Date.now() > data.expiresAt) { delete validKeys[key]; return res.json({ valid: false, message: "Key Expirada" }); }
+    if(data.hwid && data.hwid !== hwid) return res.json({ valid: false, message: "HWID Incompatível" });
+    if(!data.hwid && hwid) data.hwid = hwid;
+    return res.json({ valid: true, message: "Sucesso" });
 });
 
 app.post('/admin/generate', (req, res) => {
@@ -160,17 +217,33 @@ app.post('/admin/generate', (req, res) => {
     res.json({ success: true, key: key });
 });
 
-function getLink(provider, index) {
-    const links = LINKS_CONFIG[provider] || LINKS_CONFIG['linkvertise'];
-    return links[index] || links[links.length - 1];
+async function generateLink(session, id) {
+    if (session.provider === 'lootlabs') {
+        const index = session.current_step;
+        let baseLink = LOOTLABS_LINKS[index] || LOOTLABS_LINKS[LOOTLABS_LINKS.length - 1];
+        return `${baseLink}${baseLink.includes('?') ? '&' : '?'}custom=${id}`;
+    } else if (session.provider === 'workink') {
+        const secret = crypto.randomBytes(12).toString('hex');
+        session.dynamic_secret = secret; 
+        const destination = `${CONFIG.BASE_URL}/?secret=${secret}`;
+        const apiUrl = `https://api.work.ink/v1/link/add?api_key=${CONFIG.WORKINK_API_KEY}&destination=${encodeURIComponent(destination)}`;
+        try {
+            const result = await fetchJson(apiUrl);
+            return result?.data?.url || destination;
+        } catch (e) { return destination; }
+    }
+}
+
+function fetchJson(url) {
+    return new Promise((resolve, reject) => {
+        https.get(url, (res) => {
+            let data = ''; res.on('data', c => data += c); res.on('end', () => resolve(JSON.parse(data)));
+        }).on('error', reject);
+    });
 }
 
 function saveKey(key, hours) {
-    validKeys[key] = {
-        createdAt: Date.now(),
-        expiresAt: Date.now() + (hours * 60 * 60 * 1000),
-        hwid: null
-    };
+    validKeys[key] = { createdAt: Date.now(), expiresAt: Date.now() + (hours*3600000), hwid: null };
 }
 
-app.listen(PORT, () => console.log(`Security Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Rodando na porta ${PORT}`));
