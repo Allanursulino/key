@@ -11,7 +11,7 @@ app.use(cors({ origin: '*' }));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-app.get('/', (req, res) => res.send("✅ API MultiHub v14.0 (LootLabs Link Fix)"));
+app.get('/', (req, res) => res.send("✅ API MultiHub v15.0 (Final Fixes)"));
 
 // --- CONFIGURAÇÃO ---
 const CONFIG = {
@@ -85,6 +85,7 @@ app.post('/process-step', async (req, res) => {
     try {
         const { session_id, security_token, received_secret, provider, hours, target_checks } = req.body;
         
+        // 1. INICIAR SESSÃO
         if (!session_id || !sessions[session_id]) {
             const newID = crypto.randomBytes(16).toString('hex');
             const firstToken = crypto.randomBytes(8).toString('hex');
@@ -95,7 +96,10 @@ app.post('/process-step', async (req, res) => {
             };
             
             const linkUrl = await generateLink(sessions[newID], newID);
-            if (!linkUrl) return res.json({ status: "error", message: "Erro ao criar link." });
+            
+            if (!linkUrl) {
+                return res.json({ status: "error", message: "Erro ao criar link. Tente novamente ou contate o suporte." });
+            }
 
             return res.json({ session_id: newID, security_token: firstToken, status: "progress", step: 1, total: sessions[newID].target_checks, url: linkUrl });
         }
@@ -103,6 +107,7 @@ app.post('/process-step', async (req, res) => {
         let currentSession = sessions[session_id];
         if (security_token !== currentSession.expected_token) return res.json({ status: "error", message: "Sessão expirada." });
 
+        // 2. VALIDAÇÃO
         if (currentSession.provider === 'lootlabs') {
             if (currentSession.verified_by_webhook !== true) {
                 const timeDiff = Date.now() - currentSession.last_check_time;
@@ -110,13 +115,15 @@ app.post('/process-step', async (req, res) => {
                 return res.json({ status: "denied", message: "Ainda não confirmado pelo LootLabs." });
             }
         } else {
+            // Work.ink API
             if (!received_secret || received_secret !== currentSession.dynamic_secret) {
-                return res.json({ status: "denied", message: "Link inválido!" });
+                return res.json({ status: "denied", message: "Link inválido! Complete o anúncio." });
             }
             const timeDiff = Date.now() - currentSession.last_check_time;
             if (timeDiff < (CONFIG.MIN_SECONDS * 1000)) return res.json({ status: "wait", message: `Aguarde...` });
         }
 
+        // 3. AVANÇAR
         currentSession.current_step++;
         currentSession.last_check_time = Date.now();
         currentSession.verified_by_webhook = false;
@@ -140,7 +147,7 @@ app.post('/process-step', async (req, res) => {
         
     } catch (err) {
         console.error("Erro CRÍTICO:", err);
-        return res.status(500).json({ status: "error", message: "Erro interno." });
+        return res.status(500).json({ status: "error", message: "Erro interno no servidor." });
     }
 });
 
@@ -155,7 +162,7 @@ app.get('/verify', (req, res) => {
     return res.json({ valid: true, message: "Sucesso" });
 });
 
-// --- CORREÇÃO NA GERAÇÃO DE LINKS ---
+// --- GERADOR DE LINKS ---
 async function generateLink(session, id) {
     try {
         if (session.provider === 'lootlabs') {
@@ -164,46 +171,67 @@ async function generateLink(session, id) {
             if (!baseLink) baseLink = LOOTLABS_LINKS[LOOTLABS_LINKS.length - 1];
             baseLink = baseLink.trim();
 
-            // --- CORREÇÃO DE URL DO LOOTLABS ---
-            // Se o link for .../s?CODIGO (sem k=), ele quebra quando adicionamos &custom.
-            // Essa lógica converte para .../s?k=CODIGO&custom=...
-            const urlObj = new URL(baseLink);
-            const params = new URLSearchParams(urlObj.search);
-            const keys = Array.from(params.keys());
+            // CORREÇÃO CRÍTICA PARA LOOTLABS
+            try {
+                const urlObj = new URL(baseLink);
+                const params = new URLSearchParams(urlObj.search);
+                const keys = Array.from(params.keys());
 
-            // Se tiver apenas uma chave sem valor (ex: ?jiG288HG) e não for 'k'
-            if (keys.length === 1 && params.get(keys[0]) === '' && keys[0] !== 'k') {
-                const code = keys[0];
-                // Reconstrói como k=CODIGO
-                urlObj.search = `?k=${code}&custom=${id}`;
+                // Se o link for curto "?CODE" (sem valor), transforma em "?k=CODE"
+                // Ex: loot-link.com/s?jiG288HG -> loot-link.com/s?k=jiG288HG
+                if (keys.length === 1 && params.get(keys[0]) === '' && keys[0] !== 'k') {
+                    const code = keys[0];
+                    urlObj.search = `?k=${code}&custom=${id}`;
+                    console.log(`[LOOTLABS] Link Corrigido: ${urlObj.toString()}`);
+                    return urlObj.toString();
+                }
+                
+                // Se já for normal, apenas anexa custom
+                if (!urlObj.searchParams.has('custom')) {
+                    urlObj.searchParams.append('custom', id);
+                }
                 return urlObj.toString();
+            } catch (e) {
+                console.error("Erro parsing LootLabs URL:", e);
+                // Fallback de emergência (apenas anexa)
+                const sep = baseLink.includes('?') ? '&' : '?';
+                return `${baseLink}${sep}custom=${id}`;
             }
-            
-            // Se já tiver k= ou outro formato, adiciona custom normalmente
-            if (!urlObj.searchParams.has('custom')) {
-                urlObj.searchParams.append('custom', id);
-            }
-            return urlObj.toString();
         } 
         else if (session.provider === 'workink') {
             const secret = crypto.randomBytes(12).toString('hex');
             session.dynamic_secret = secret; 
+            
             const destination = `${CONFIG.BASE_URL}/?secret=${secret}`;
             
-            if (!CONFIG.WORKINK_API_KEY) return null;
+            if (!CONFIG.WORKINK_API_KEY) {
+                console.error("ERRO: API Key do Work.ink não configurada!");
+                return null;
+            }
+
+            console.log(`[WORKINK] Criando link... Destino: ${destination}`);
 
             const response = await axios.post("https://dashboard.work.ink/_api/v1/link", {
                 title: `MultiHub Check ${session.current_step + 1}`,
-                destination: destination,
-                custom: `check-${id.substring(0,6)}`
+                destination: destination
+                // REMOVIDO: custom slug (deixar automático evita erros)
             }, {
-                headers: { "X-Api-Key": CONFIG.WORKINK_API_KEY, "Content-Type": "application/json" }
+                headers: {
+                    "X-Api-Key": CONFIG.WORKINK_API_KEY,
+                    "Content-Type": "application/json"
+                }
             });
 
-            return response.data?.url || null;
+            if (response.data && response.data.url) {
+                console.log(`[WORKINK] Sucesso: ${response.data.url}`);
+                return response.data.url;
+            } else {
+                console.error("Work.ink Erro:", response.data);
+                return null;
+            }
         }
     } catch (e) {
-        console.error("Erro generateLink:", e.message);
+        console.error("Erro generateLink:", e.response ? e.response.data : e.message);
         return null;
     }
 }
