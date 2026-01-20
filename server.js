@@ -12,23 +12,36 @@ app.use(cors({ origin: '*' }));
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// --- CONEXÃO COM MONGODB ---
-// O servidor só inicia se conectar ao banco
+// --- CONEXÃO MONGODB ROBUSTA ---
 const connectDB = async () => {
     try {
         if (!process.env.MONGO_URI) {
-            console.error("❌ ERRO: Variável MONGO_URI não configurada no Render!");
+            console.error("❌ ERRO FATAL: MONGO_URI não está nas variáveis do Render!");
             return;
         }
-        await mongoose.connect(process.env.MONGO_URI);
-        console.log("✅ MongoDB Conectado com Sucesso!");
+
+        // Opções para evitar timeout silencioso
+        await mongoose.connect(process.env.MONGO_URI, {
+            serverSelectionTimeoutMS: 5000, // Desiste após 5s se não achar servidor
+            socketTimeoutMS: 45000,
+        });
+        
+        console.log("✅ MongoDB: CONECTADO COM SUCESSO!");
+        
     } catch (err) {
-        console.error("❌ Erro ao conectar MongoDB:", err);
+        console.error("❌ MongoDB: ERRO DE CONEXÃO:");
+        console.error(err.message); // Mostra o motivo exato (senha errada, IP bloqueado, etc)
     }
 };
+
+// Listeners para monitorar a conexão em tempo real
+mongoose.connection.on('connected', () => console.log('Mongoose conectado ao DB'));
+mongoose.connection.on('error', (err) => console.error('Mongoose erro:', err));
+mongoose.connection.on('disconnected', () => console.warn('Mongoose desconectado'));
+
 connectDB();
 
-// --- MODELOS DO BANCO DE DADOS ---
+// --- MODELOS ---
 const KeySchema = new mongoose.Schema({
     key: { type: String, required: true, unique: true },
     hwids: { type: [String], default: [] },
@@ -55,7 +68,7 @@ const CONFIG = {
     MIN_SECONDS: 10
 };
 
-// LootLabs Links
+// --- LINKS DO LOOTLABS ---
 const LOOTLABS_LINKS = [
     "https://loot-link.com/s?jiG288HG", 
     "https://lootdest.org/s?FhMcLnzN",
@@ -64,10 +77,9 @@ const LOOTLABS_LINKS = [
     "https://loot-link.com/s?IaoMNEEr"
 ];
 
-// Sessões continuam em memória (não precisa salvar sessão temporária no banco)
 let sessions = {}; 
 
-app.get('/', (req, res) => res.send("✅ API MultiHub v30.0 (MongoDB Persistent)"));
+app.get('/', (req, res) => res.send("✅ API MultiHub v31.0 (MongoDB Connection Fix)"));
 
 // --- LOG DISCORD ---
 app.post('/log-discord', async (req, res) => {
@@ -88,112 +100,85 @@ app.post('/log-discord', async (req, res) => {
     catch (e) { res.status(500).json({ error: "Erro Discord" }); }
 });
 
-// --- ADMIN API ---
-
-// Listar Keys (Lê do Banco)
+// --- ADMIN API (DB) ---
 app.post('/admin/list-keys', async (req, res) => {
     if (req.body.adminSecret !== CONFIG.ADMIN_SECRET) return res.status(403).json({ error: "Senha errada" });
-    
     try {
-        const keys = await KeyModel.find().sort({ createdAt: -1 }); // Mais recentes primeiro
-        const bans = await BanModel.find();
-        
+        const keys = await KeyModel.find().sort({ createdAt: -1 });
         const list = keys.map(k => ({
-            key: k.key,
-            hwids: k.hwids || [],
-            maxHwids: k.maxHwids,
-            expires: new Date(k.expiresAt).toLocaleString(),
-            isExpired: Date.now() > k.expiresAt
+            key: k.key, hwids: k.hwids || [], maxHwids: k.maxHwids, expires: new Date(k.expiresAt).toLocaleString(), isExpired: Date.now() > k.expiresAt
         }));
-        
+        // Busca bans
+        const bans = await BanModel.find();
         const bannedList = bans.map(b => b.hwid);
-        
         res.json({ keys: list, bannedHWIDs: bannedList });
-    } catch (e) {
-        res.status(500).json({ error: "Erro ao ler banco de dados" });
-    }
+    } catch (e) { res.status(500).json({ error: "Erro DB: " + e.message }); }
 });
 
-// Gerar Key Admin
 app.post('/admin/generate', async (req, res) => {
     const { hours, adminSecret, maxHwids } = req.body;
     if (adminSecret !== CONFIG.ADMIN_SECRET) return res.status(403).json({ error: "Senha errada" });
     
     const keyString = `MULTI-ADMIN-${hours > 800000 ? 'LIFE' : hours + 'H'}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-    
     try {
-        await saveKeyToDB(keyString, hours, maxHwids || 1);
+        await KeyModel.create({
+            key: keyString,
+            expiresAt: Date.now() + (hours * 3600000),
+            maxHwids: maxHwids || 1,
+            hwids: []
+        });
         res.json({ success: true, key: keyString });
-    } catch (e) {
-        res.status(500).json({ error: "Erro ao salvar no banco" });
-    }
+    } catch (e) { res.status(500).json({ error: "Erro ao salvar Key" }); }
 });
 
-// Resetar HWID
 app.post('/admin/reset-hwid', async (req, res) => {
     const { adminSecret, key } = req.body;
     if (adminSecret !== CONFIG.ADMIN_SECRET) return res.status(403).json({ error: "Acesso negado" });
-    
     await KeyModel.findOneAndUpdate({ key: key }, { hwids: [] });
     res.json({ success: true });
 });
 
-// Remover 1 HWID
 app.post('/admin/remove-single-hwid', async (req, res) => {
     const { adminSecret, key, hwidToRemove } = req.body;
     if (adminSecret !== CONFIG.ADMIN_SECRET) return res.status(403).json({ error: "Acesso negado" });
-    
     await KeyModel.findOneAndUpdate({ key: key }, { $pull: { hwids: hwidToRemove } });
     res.json({ success: true });
 });
 
-// Banir HWID
 app.post('/admin/ban-hwid', async (req, res) => {
     const { adminSecret, hwid } = req.body;
     if (adminSecret !== CONFIG.ADMIN_SECRET) return res.status(403).json({ error: "Acesso negado" });
-    
     try {
-        // Adiciona na blacklist
         await BanModel.create({ hwid: hwid });
-        // Remove de todas as keys ativas
         await KeyModel.updateMany({}, { $pull: { hwids: hwid } });
         res.json({ success: true });
-    } catch (e) {
-        // Se já existe (erro duplicado), tudo bem
-        res.json({ success: true, message: "Já banido" });
-    }
+    } catch (e) { res.json({ success: true, message: "Já banido" }); }
 });
 
-// Deletar Key
 app.post('/admin/delete-key', async (req, res) => {
     const { adminSecret, key } = req.body;
     if (adminSecret !== CONFIG.ADMIN_SECRET) return res.status(403).json({ error: "Acesso negado" });
-    
     await KeyModel.deleteOne({ key: key });
     res.json({ success: true });
 });
 
-// --- WEBHOOKS & PROCESSO ---
+// --- PROCESSO USUÁRIO ---
 
 app.get('/webhook/lootlabs', (req, res) => {
     const session_id = req.query.custom || req.query.subid || req.query.s1;
     if (session_id && sessions[session_id]) {
         sessions[session_id].verified_by_webhook = true;
         res.status(200).send("OK");
-    } else { 
-        res.status(400).send("ID Inválido"); 
-    }
+    } else { res.status(400).send("ID Inválido"); }
 });
 
 app.post('/process-step', async (req, res) => {
     try {
         const { session_id, security_token, received_secret, provider, hours, target_checks } = req.body;
         
-        // 1. INICIAR
         if (!session_id || !sessions[session_id]) {
             const newID = crypto.randomBytes(16).toString('hex');
             const firstToken = crypto.randomBytes(8).toString('hex');
-            
             const selectedProvider = (provider === 'workink' || provider === 'linkvertise') ? provider : 'lootlabs';
 
             sessions[newID] = {
@@ -204,14 +189,12 @@ app.post('/process-step', async (req, res) => {
             
             const linkResult = await generateLink(sessions[newID], newID);
             if (!linkResult.success) return res.json({ status: "error", message: linkResult.error });
-
             return res.json({ session_id: newID, security_token: firstToken, status: "progress", step: 1, total: sessions[newID].target_checks, url: linkResult.url });
         }
 
         let currentSession = sessions[session_id];
         if (security_token !== currentSession.expected_token) return res.json({ status: "error", message: "Sessão expirada." });
 
-        // 2. VALIDAÇÃO
         if (currentSession.provider === 'lootlabs') {
             if (currentSession.verified_by_webhook !== true) {
                 const timeDiff = Date.now() - currentSession.last_check_time;
@@ -219,14 +202,11 @@ app.post('/process-step', async (req, res) => {
                 return res.json({ status: "denied", message: "Ainda não confirmado." });
             }
         } else {
-            if (!received_secret || received_secret !== currentSession.dynamic_secret) {
-                return res.json({ status: "denied", message: "Link inválido!" });
-            }
+            if (!received_secret || received_secret !== currentSession.dynamic_secret) return res.json({ status: "denied", message: "Link inválido!" });
             const timeDiff = Date.now() - currentSession.last_check_time;
             if (timeDiff < (CONFIG.MIN_SECONDS * 1000)) return res.json({ status: "wait", message: `Aguarde...` });
         }
 
-        // 3. AVANÇAR
         currentSession.current_step++;
         currentSession.last_check_time = Date.now();
         currentSession.verified_by_webhook = false;
@@ -235,76 +215,68 @@ app.post('/process-step', async (req, res) => {
         const nextToken = crypto.randomBytes(8).toString('hex');
         currentSession.expected_token = nextToken;
 
-        // FINALIZAR E SALVAR NO BANCO
         if (currentSession.current_step >= currentSession.target_checks) {
             const prefix = currentSession.provider === 'workink' ? 'WK' : (currentSession.provider === 'linkvertise' ? 'LV' : 'LL');
             const key = `MULTI-${prefix}-${currentSession.hours}H-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
             
-            // Salva no MongoDB
-            await saveKeyToDB(key, currentSession.hours, 1);
-            
-            delete sessions[session_id];
-            return res.json({ status: "completed", key: key });
+            // SALVA NO BANCO
+            try {
+                await KeyModel.create({
+                    key: key,
+                    expiresAt: Date.now() + (currentSession.hours * 3600000),
+                    maxHwids: 1,
+                    hwids: []
+                });
+                delete sessions[session_id];
+                return res.json({ status: "completed", key: key });
+            } catch(e) {
+                return res.json({ status: "error", message: "Erro ao salvar key no DB" });
+            }
         }
 
         const linkResult = await generateLink(currentSession, session_id);
         if (!linkResult.success) return res.json({ status: "error", message: linkResult.error });
-
         return res.json({ session_id: session_id, security_token: nextToken, status: "progress", step: currentSession.current_step + 1, total: currentSession.target_checks, url: linkResult.url });
         
-    } catch (err) {
-        console.error("Erro CRÍTICO:", err);
-        return res.status(500).json({ status: "error", message: "Erro interno." });
-    }
+    } catch (err) { console.error("Erro CRÍTICO:", err); return res.status(500).json({ status: "error", message: "Erro interno." }); }
 });
 
-// --- VERIFY COM BANCO DE DADOS ---
+// --- VERIFY (DB) ---
 app.get('/verify', async (req, res) => {
     const { key, hwid } = req.query;
     if(!key) return res.json({ valid: false, message: "Key Inválida" });
 
     try {
-        // 1. Checa Banimento
         const isBanned = await BanModel.findOne({ hwid: hwid });
         if (isBanned) return res.json({ valid: false, message: "HWID Banido" });
 
-        // 2. Busca Key
         const keyData = await KeyModel.findOne({ key: key });
         if (!keyData) return res.json({ valid: false, message: "Key Inexistente" });
 
-        // 3. Checa Expiração
-        if (Date.now() > keyData.expiresAt) {
-            // Opcional: Deletar key expirada para limpar banco
-            // await KeyModel.deleteOne({ key: key }); 
-            return res.json({ valid: false, message: "Key Expirada" });
-        }
+        if (Date.now() > keyData.expiresAt) return res.json({ valid: false, message: "Key Expirada" });
 
-        // 4. Valida HWID
-        if (keyData.hwids.includes(hwid)) {
-            return res.json({ valid: true, message: "Sucesso" });
-        }
+        if (keyData.hwids.includes(hwid)) return res.json({ valid: true, message: "Sucesso" });
 
         if (keyData.hwids.length < keyData.maxHwids) {
             keyData.hwids.push(hwid);
             await keyData.save();
-            return res.json({ valid: true, message: "Sucesso (Novo Device)" });
+            return res.json({ valid: true, message: "Sucesso (Novo)" });
         } else {
             return res.json({ valid: false, message: "Limite HWID Atingido" });
         }
     } catch (e) {
-        console.error("Erro Verify:", e);
-        return res.json({ valid: false, message: "Erro Servidor" });
+        console.error(e);
+        return res.json({ valid: false, message: "Erro DB" });
     }
 });
 
-// --- GERADOR DE LINKS ---
+// --- GERADOR LINKS ---
 async function generateLink(session, id) {
     try {
         if (session.provider === 'lootlabs') {
             const index = session.current_step;
             let baseLink = LOOTLABS_LINKS[index] || LOOTLABS_LINKS[LOOTLABS_LINKS.length - 1];
             baseLink = baseLink.trim();
-            // Lógica de URL
             try {
                 const urlObj = new URL(baseLink);
                 const params = new URLSearchParams(urlObj.search);
@@ -345,19 +317,6 @@ async function generateLink(session, id) {
             return { success: true, url: `https://link-to.net/${CONFIG.LINKVERTISE_ID}/${randomPath}/dynamic?r=${base64Dest}` };
         }
     } catch (e) { return { success: false, error: e.message }; }
-}
-
-async function saveKeyToDB(key, hours, maxHwids) {
-    try {
-        await KeyModel.create({
-            key: key,
-            expiresAt: Date.now() + (hours * 3600000),
-            maxHwids: maxHwids,
-            hwids: []
-        });
-    } catch (e) {
-        console.error("Erro ao salvar key no DB:", e);
-    }
 }
 
 app.listen(PORT, () => console.log(`Rodando na porta ${PORT}`));
