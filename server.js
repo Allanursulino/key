@@ -206,6 +206,20 @@ app.post('/admin/delete-key', async (req, res) => {
     res.json({ success: true });
 });
 
+// Nova rota para eliminar chaves expiradas em massa
+app.post('/admin/delete-expired', async (req, res) => {
+    const { adminSecret } = req.body;
+    if (adminSecret !== CONFIG.ADMIN_SECRET) return res.status(403).json({ error: "Acesso negado" });
+    
+    try {
+        const tempoAtual = Date.now();
+        const resultado = await KeyModel.deleteMany({ expiresAt: { $lt: tempoAtual } });
+        res.json({ success: true, message: "Sucesso", deletadas: resultado.deletedCount });
+    } catch (e) { 
+        res.status(500).json({ success: false, message: "Erro DB" }); 
+    }
+});
+
 // ==================================================================
 // 5. PROCESSO CHECKPOINT
 // ==================================================================
