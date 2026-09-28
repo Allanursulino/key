@@ -325,7 +325,10 @@ async function generateLink(session, id) {
                 let finalUrl = response.data.response?.url || response.data.url;
                 if (finalUrl) return { success: true, url: finalUrl };
                 else return { success: false, error: "Work.ink falhou" };
-            } catch (err) { return { success: false, error: "Work.ink API Error" }; }
+            } catch (err) { 
+    const detalhe = err.response?.data?.message || err.message;
+    return { success: false, error: `Erro Work.ink: ${detalhe}` }; 
+}
         }
         else if (session.provider === 'linkvertise') {
             if (!CONFIG.LINKVERTISE_ID) return { success: false, error: "Linkvertise ID Off" };
