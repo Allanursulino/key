@@ -305,12 +305,11 @@ async function generateLink(session, id) {
             if (!CONFIG.LOOTLABS_API_KEY) return { success: false, error: "API Key LootLabs Off" };
             
             try {
-                // Endpoint oficial e correto do LootLabs
                 const response = await axios.post("https://creators.lootlabs.gg/api/public/content_locker", {
                     title: `Checkpoint ${session.current_step + 1}`,
                     url: destination,
-                    tier_id: 1,         // Obrigatório: Nível de anúncios (1 a 4)
-                    number_of_tasks: 1  // Obrigatório: Quantidade de tarefas (1 a 5)
+                    tier_id: 1,
+                    number_of_tasks: 1
                 }, { 
                     headers: { 
                         "Authorization": `Bearer ${CONFIG.LOOTLABS_API_KEY}`,
@@ -318,14 +317,29 @@ async function generateLink(session, id) {
                     } 
                 });
                 
-                // O LootLabs devolve o URL gerado dentro de response.data.message.loot_url
-                let finalUrl = response.data.message?.loot_url || response.data.message;
+                // Extração segura garantindo que finalUrl seja uma string de URL válida
+                let finalUrl = null;
+                const resData = response.data;
+
+                if (typeof resData?.message === 'string') {
+                    finalUrl = resData.message;
+                } else if (resData?.message?.loot_url) {
+                    finalUrl = resData.message.loot_url;
+                } else if (resData?.message?.short) {
+                    finalUrl = `https://loot-link.com/s?${resData.message.short}`;
+                } else if (resData?.loot_url) {
+                    finalUrl = resData.loot_url;
+                }
                 
-                if (finalUrl) return { success: true, url: finalUrl };
-                else return { success: false, error: "LootLabs falhou ao gerar o link" };
+                if (finalUrl && typeof finalUrl === 'string') {
+                    return { success: true, url: finalUrl };
+                } else {
+                    console.error("Resposta inesperada do LootLabs:", resData);
+                    return { success: false, error: "LootLabs não retornou uma URL válida" };
+                }
             } catch (err) { 
                 const detalhe = err.response?.data?.message || err.message;
-                return { success: false, error: `Erro LootLabs: ${detalhe}` }; 
+                return { success: false, error: `Erro LootLabs: ${typeof detalhe === 'object' ? JSON.stringify(detalhe) : detalhe}` }; 
             }
         }
         else if (session.provider === 'linkvertise') {
