@@ -302,7 +302,7 @@ async function generateLink(session, id) {
             session.dynamic_secret = secret; 
             const destination = `${CONFIG.BASE_URL}/?secret=${secret}`;
             
-            if (!CONFIG.LOOTLABS_API_KEY) return { success: false, error: "API Key LootLabs Off" };
+            if (!CONFIG.LOOTLABS_API_KEY) return { success: false, error: "API Key LootLabs Ausente" };
             
             try {
                 const response = await axios.post("https://creators.lootlabs.gg/api/public/content_locker", {
@@ -317,33 +317,45 @@ async function generateLink(session, id) {
                     } 
                 });
                 
-                // Extração segura garantindo que finalUrl seja uma string de URL válida
                 let finalUrl = null;
                 const resData = response.data;
+                const dadosEmTexto = JSON.stringify(resData);
 
-                if (typeof resData?.message === 'string') {
+                // 1. Tenta extrair diretamente os padrões mais comuns
+                if (typeof resData?.message === 'string' && resData.message.startsWith('http')) {
                     finalUrl = resData.message;
                 } else if (resData?.message?.loot_url) {
                     finalUrl = resData.message.loot_url;
-                } else if (resData?.message?.short) {
-                    finalUrl = `https://loot-link.com/s?${resData.message.short}`;
+                } else if (resData?.message?.url) {
+                    finalUrl = resData.message.url;
                 } else if (resData?.loot_url) {
                     finalUrl = resData.loot_url;
+                } else if (resData?.url) {
+                    finalUrl = resData.url;
+                } 
+                // 2. Se as chaves mudaram, procura por força bruta qualquer link do lootlabs no meio da resposta
+                else {
+                    const radarDeLink = dadosEmTexto.match(/https:\/\/[^"'\s]*?(loot)[^"'\s]*/i);
+                    if (radarDeLink && radarDeLink[0]) {
+                        finalUrl = radarDeLink[0];
+                    }
                 }
                 
-                if (finalUrl && typeof finalUrl === 'string') {
+                // Se encontrou a URL, devolve com sucesso
+                if (finalUrl && finalUrl.startsWith('http')) {
                     return { success: true, url: finalUrl };
                 } else {
-                    console.error("Resposta inesperada do LootLabs:", resData);
-                    return { success: false, error: "LootLabs não retornou uma URL válida" };
+                    // SE FALHAR, AGORA VAI MOSTRAR EXATAMENTE O TEXTO QUE O LOOTLABS MANDOU
+                    return { success: false, error: `DEBUG LOOTLABS: ${dadosEmTexto.substring(0, 150)}` };
                 }
+                
             } catch (err) { 
                 const detalhe = err.response?.data?.message || err.message;
-                return { success: false, error: `Erro LootLabs: ${typeof detalhe === 'object' ? JSON.stringify(detalhe) : detalhe}` }; 
+                return { success: false, error: `Erro LootLabs (Falha na requisição): ${typeof detalhe === 'object' ? JSON.stringify(detalhe) : detalhe}` }; 
             }
         }
         else if (session.provider === 'linkvertise') {
-            if (!CONFIG.LINKVERTISE_ID) return { success: false, error: "Linkvertise ID Off" };
+            if (!CONFIG.LINKVERTISE_ID) return { success: false, error: "Linkvertise ID Ausente" };
             const secret = crypto.randomBytes(12).toString('hex');
             session.dynamic_secret = secret; 
             const destination = `${CONFIG.BASE_URL}/?secret=${secret}`;
