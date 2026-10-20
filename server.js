@@ -58,7 +58,7 @@ const BanModel = mongoose.model('Ban', BanSchema);
 const CONFIG = {
     ADMIN_SECRET: process.env.ADMIN_SECRET, 
     BASE_URL: process.env.BASE_URL, 
-    WORKINK_API_KEY: process.env.WORKINK_API_KEY, 
+    LOOTLABS_API_KEY: process.env.LOOTLABS_API_KEY, 
     DISCORD_WEBHOOK: process.env.DISCORD_WEBHOOK,
     LINKVERTISE_ID: process.env.LINKVERTISE_ID,
     MIN_SECONDS: 10
@@ -82,35 +82,30 @@ const processDiscordQueue = async () => {
     isProcessingQueue = true;
 
     while (discordQueue.length > 0) {
-        const embedData = discordQueue[0]; // Pega o primeiro item
+        const embedData = discordQueue[0];
         
         try {
             if (!CONFIG.DISCORD_WEBHOOK) {
-                discordQueue.shift(); // Remove se não tiver config
+                discordQueue.shift();
                 continue;
             }
 
             await axios.post(CONFIG.DISCORD_WEBHOOK, { embeds: [embedData] });
             console.log("✅ Webhook enviado (Queue Size: " + (discordQueue.length - 1) + ")");
             
-            discordQueue.shift(); // Sucesso: Remove da fila
-            
-            // DELAY OBRIGATÓRIO DE 2 SEGUNDOS ENTRE ENVIOS
+            discordQueue.shift();
             await new Promise(resolve => setTimeout(resolve, 2000));
 
         } catch (e) {
             const status = e.response ? e.response.status : 0;
             
             if (status === 429) {
-                // Discord mandou parar (Rate Limit)
                 const retryAfter = e.response.data.retry_after ? (e.response.data.retry_after * 1000) : 10000;
                 console.warn(`⚠️ Discord Rate Limit! Pausando fila por ${retryAfter}ms...`);
-                // Espera o tempo que o Discord pediu + 1 segundo de segurança
                 await new Promise(resolve => setTimeout(resolve, retryAfter + 1000));
-                // NÃO remove da fila, tenta de novo na próxima volta do while
             } else {
                 console.error(`❌ Erro Webhook (${status}):`, e.message);
-                discordQueue.shift(); // Erro fatal, remove para não travar a fila
+                discordQueue.shift();
             }
         }
     }
@@ -123,10 +118,9 @@ app.post('/log-discord', (req, res) => {
 
     if (!username || !key) return res.status(400).json({ error: "Dados incompletos" });
     
-    // Monta o Embed
     const embed = {
         title: "🚨 Key Resgatada com Sucesso",
-        color: 3066993, // Verde
+        color: 3066993,
         fields: [
             { name: "👤 Usuário", value: `${username}`, inline: true },
             { name: "⏳ Idade da Conta", value: `${accountAge} dias`, inline: true },
@@ -138,13 +132,9 @@ app.post('/log-discord', (req, res) => {
         timestamp: new Date().toISOString()
     };
 
-    // Adiciona na fila em vez de enviar direto
     discordQueue.push(embed);
-    
-    // Aciona o processador (se já não estiver rodando)
     processDiscordQueue();
 
-    // Responde sucesso imediato para o Roblox não ficar esperando
     res.json({ success: true, message: "Log enfileirado" });
 });
 
@@ -230,7 +220,7 @@ app.post('/process-step', async (req, res) => {
         if (!session_id || !sessions[session_id]) {
             const newID = crypto.randomBytes(16).toString('hex');
             const firstToken = crypto.randomBytes(8).toString('hex');
-            const validProvider = (provider === 'linkvertise') ? 'linkvertise' : 'workink';
+            const validProvider = (provider === 'linkvertise') ? 'linkvertise' : 'lootlabs';
 
             sessions[newID] = {
                 provider: validProvider, hours: hours || 24, target_checks: target_checks || 3,
@@ -258,7 +248,7 @@ app.post('/process-step', async (req, res) => {
         currentSession.expected_token = nextToken;
 
         if (currentSession.current_step >= currentSession.target_checks) {
-            const prefix = currentSession.provider === 'workink' ? 'WK' : 'LV';
+            const prefix = currentSession.provider === 'lootlabs' ? 'LL' : 'LV';
             const key = `MULTI-${prefix}-${currentSession.hours}H-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
             try {
                 await KeyModel.create({ key: key, expiresAt: Date.now() + (currentSession.hours * 3600000), maxHwids: 1, hwids: [] });
@@ -295,10 +285,6 @@ app.get('/verify', async (req, res) => {
         if (keyData.hwids.length < keyData.maxHwids) {
             keyData.hwids.push(hwid);
             await keyData.save();
-            
-            // LOG DE NOVO LOGIN COM QUEUE (Mesma função do log-discord, mas interno se precisar)
-            // Aqui mantemos simples na resposta do verify
-            
             return res.json({ valid: true, message: "Sucesso (Novo Device)" });
         } else {
             return res.json({ valid: false, message: "Limite de HWIDs" });
@@ -311,24 +297,31 @@ app.get('/verify', async (req, res) => {
 // ==================================================================
 async function generateLink(session, id) {
     try {
-        if (session.provider === 'workink') {
+        if (session.provider === 'lootlabs') {
             const secret = crypto.randomBytes(12).toString('hex');
             session.dynamic_secret = secret; 
             const destination = `${CONFIG.BASE_URL}/?secret=${secret}`;
-            if (!CONFIG.WORKINK_API_KEY) return { success: false, error: "API Key Work.ink Off" };
+            
+            if (!CONFIG.LOOTLABS_API_KEY) return { success: false, error: "API Key LootLabs Off" };
             
             try {
-                const response = await axios.post("https://dashboard.work.ink/_api/v1/link", {
-                    title: `Check ${session.current_step + 1} - ${Date.now()}`,
-                    destination: destination
-                }, { headers: { "X-Api-Key": CONFIG.WORKINK_API_KEY, "Content-Type": "application/json" } });
-                let finalUrl = response.data.response?.url || response.data.url;
+                const response = await axios.post("https://api.lootlabs.gg/v1/content/create", {
+                    title: `Checkpoint ${session.current_step + 1}`,
+                    url: destination
+                }, { 
+                    headers: { 
+                        "Authorization": `Bearer ${CONFIG.LOOTLABS_API_KEY}`,
+                        "Content-Type": "application/json" 
+                    } 
+                });
+                
+                let finalUrl = response.data.message || response.data.url || response.data.link;
                 if (finalUrl) return { success: true, url: finalUrl };
-                else return { success: false, error: "Work.ink falhou" };
+                else return { success: false, error: "LootLabs falhou ao gerar o link" };
             } catch (err) { 
-    const detalhe = err.response?.data?.message || err.message;
-    return { success: false, error: `Erro Work.ink: ${detalhe}` }; 
-}
+                const detalhe = err.response?.data?.message || err.message;
+                return { success: false, error: `Erro LootLabs: ${detalhe}` }; 
+            }
         }
         else if (session.provider === 'linkvertise') {
             if (!CONFIG.LINKVERTISE_ID) return { success: false, error: "Linkvertise ID Off" };
