@@ -305,9 +305,12 @@ async function generateLink(session, id) {
             if (!CONFIG.LOOTLABS_API_KEY) return { success: false, error: "API Key LootLabs Off" };
             
             try {
-                const response = await axios.post("https://api.lootlabs.gg/v1/content/create", {
+                // Endpoint oficial e correto do LootLabs
+                const response = await axios.post("https://creators.lootlabs.gg/api/public/content_locker", {
                     title: `Checkpoint ${session.current_step + 1}`,
-                    url: destination
+                    url: destination,
+                    tier_id: 1,         // Obrigatório: Nível de anúncios (1 a 4)
+                    number_of_tasks: 1  // Obrigatório: Quantidade de tarefas (1 a 5)
                 }, { 
                     headers: { 
                         "Authorization": `Bearer ${CONFIG.LOOTLABS_API_KEY}`,
@@ -315,7 +318,9 @@ async function generateLink(session, id) {
                     } 
                 });
                 
-                let finalUrl = response.data.message || response.data.url || response.data.link;
+                // O LootLabs devolve o URL gerado dentro de response.data.message.loot_url
+                let finalUrl = response.data.message?.loot_url || response.data.message;
+                
                 if (finalUrl) return { success: true, url: finalUrl };
                 else return { success: false, error: "LootLabs falhou ao gerar o link" };
             } catch (err) { 
