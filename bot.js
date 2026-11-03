@@ -5,30 +5,31 @@ const {
 const axios = require('axios');
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
-const API_URL = "https://multihub-api-ljf7.onrender.com"; // Sua API no Render
+const API_URL = process.env.BASE_URL || "https://multihub-api-ljf7.onrender.com"; 
 const ROLE_REQUIRED = "</> Lord";
 
-// Sistema simples de cache para manter a senha salva enquanto você usa os botões
-const activeSessions = new Map();
+// O bot agora pega a senha mestra diretamente das variáveis de ambiente do Render
+const ADMIN_SECRET = process.env.ADMIN_SECRET;
 
 const commands = [
     new SlashCommandBuilder()
         .setName('multihub-admin')
         .setDescription('Painel de administração completo do MultiHub')
-        .addStringOption(option => 
-            option.setName('senha')
-                .setDescription('Senha Mestra de Autenticação')
-                .setRequired(true))
 ];
 
 client.once('ready', async () => {
     console.log(`Bot logado como ${client.user.tag}`);
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-    await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands });
+    try {
+        await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands });
+        console.log('Comandos recarregados sem a exigência de senha.');
+    } catch (e) {
+        console.error("Erro ao registrar comandos:", e);
+    }
 });
 
 client.on('interactionCreate', async interaction => {
-    // 1. VERIFICAÇÃO DE CARGO GLOBAL PARA TODAS AS AÇÕES
+    // VERIFICAÇÃO DE CARGO GLOBAL
     if (interaction.member) {
         const hasRole = interaction.member.roles.cache.some(role => role.name === ROLE_REQUIRED);
         if (!hasRole) {
@@ -43,24 +44,18 @@ client.on('interactionCreate', async interaction => {
     // SLASH COMMAND: /multihub-admin
     // ==========================================
     if (interaction.isChatInputCommand() && interaction.commandName === 'multihub-admin') {
-        const senha = interaction.options.getString('senha');
-        
         await interaction.deferReply({ ephemeral: true });
 
         try {
-            // Testa a senha listando as keys
-            const res = await axios.post(`${API_URL}/admin/list-keys`, { adminSecret: senha });
-            if (res.data.error) return interaction.editReply({ content: '❌ Senha Mestra incorreta!' });
-
-            // Salva a sessão do usuário
-            activeSessions.set(interaction.user.id, senha);
+            const res = await axios.post(`${API_URL}/admin/list-keys`, { adminSecret: ADMIN_SECRET });
+            if (res.data.error) return interaction.editReply({ content: '❌ Erro de Autenticação da API (Verifique o ADMIN_SECRET no Render).' });
 
             const keys = res.data.keys;
             const keysAtivas = keys.filter(k => !k.isExpired).length;
 
             const embed = new EmbedBuilder()
                 .setTitle('🛡️ MULTIHUB MANAGER - CONSOLE')
-                .setDescription('Autenticado com sucesso. Sessão ativa.\nUse os botões abaixo para gerenciar o sistema.')
+                .setDescription('Autenticado via Integração Segura.\nUse os botões abaixo para gerenciar o sistema.')
                 .setColor('#dc2626')
                 .addFields(
                     { name: '📊 Status', value: `Total de Keys: **${keys.length}**\nKeys Ativas: **${keysAtivas}**`, inline: false }
@@ -87,14 +82,12 @@ client.on('interactionCreate', async interaction => {
     // INTERAÇÕES COM BOTÕES
     // ==========================================
     if (interaction.isButton()) {
-        const senha = activeSessions.get(interaction.user.id);
-        if (!senha) return interaction.reply({ content: '⚠️ Sua sessão expirou. Digite `/multihub-admin` novamente.', ephemeral: true });
-
+        
         // AÇÃO: Limpar Expiradas
         if (interaction.customId === 'limpar_expiradas') {
             await interaction.deferReply({ ephemeral: true });
             try {
-                await axios.post(`${API_URL}/admin/delete-expired`, { adminSecret: senha });
+                await axios.post(`${API_URL}/admin/delete-expired`, { adminSecret: ADMIN_SECRET });
                 await interaction.editReply({ content: '✅ Todas as keys expiradas foram limpas com sucesso!' });
             } catch (e) { await interaction.editReply({ content: '❌ Erro ao limpar chaves.' }); }
         }
@@ -130,7 +123,7 @@ client.on('interactionCreate', async interaction => {
             const targetKey = interaction.customId.replace('reset_hwid_', '');
             await interaction.deferReply({ ephemeral: true });
             try {
-                await axios.post(`${API_URL}/admin/reset-hwid`, { adminSecret: senha, key: targetKey });
+                await axios.post(`${API_URL}/admin/reset-hwid`, { adminSecret: ADMIN_SECRET, key: targetKey });
                 await interaction.editReply({ content: `✅ HWIDs resetados para a key \`${targetKey}\`.` });
             } catch (e) { await interaction.editReply({ content: '❌ Erro ao resetar HWID.' }); }
         }
@@ -140,7 +133,7 @@ client.on('interactionCreate', async interaction => {
             const targetKey = interaction.customId.replace('del_key_', '');
             await interaction.deferReply({ ephemeral: true });
             try {
-                await axios.post(`${API_URL}/admin/delete-key`, { adminSecret: senha, key: targetKey });
+                await axios.post(`${API_URL}/admin/delete-key`, { adminSecret: ADMIN_SECRET, key: targetKey });
                 await interaction.editReply({ content: `✅ Key \`${targetKey}\` deletada com sucesso.` });
             } catch (e) { await interaction.editReply({ content: '❌ Erro ao deletar Key.' }); }
         }
@@ -150,9 +143,7 @@ client.on('interactionCreate', async interaction => {
     // PROCESSAMENTO DE MODAIS (FORMULÁRIOS)
     // ==========================================
     if (interaction.isModalSubmit()) {
-        const senha = activeSessions.get(interaction.user.id);
-        if (!senha) return interaction.reply({ content: '⚠️ Sua sessão expirou.', ephemeral: true });
-
+        
         // SUBMIT: Gerar Key
         if (interaction.customId === 'modal_gerar_key') {
             await interaction.deferReply({ ephemeral: true });
@@ -160,7 +151,7 @@ client.on('interactionCreate', async interaction => {
             const maxHwids = parseInt(interaction.fields.getTextInputValue('max_hwid'));
 
             try {
-                const res = await axios.post(`${API_URL}/admin/generate`, { adminSecret: senha, hours: horas, maxHwids: maxHwids });
+                const res = await axios.post(`${API_URL}/admin/generate`, { adminSecret: ADMIN_SECRET, hours: horas, maxHwids: maxHwids });
                 if (res.data.key) {
                     await interaction.editReply({ content: `✅ **Key Gerada com Sucesso!**\n\`\`\`\n${res.data.key}\n\`\`\`` });
                 } else {
@@ -169,25 +160,45 @@ client.on('interactionCreate', async interaction => {
             } catch (e) { await interaction.editReply({ content: '❌ Erro na API.' }); }
         }
 
-        // SUBMIT: Buscar Key e Mostrar Opções de Gerenciamento
+        // SUBMIT: Buscar Key e Mostrar Opções de Gerenciamento (COM INFORMAÇÕES DO ROBLOX)
         if (interaction.customId === 'modal_buscar_key') {
             await interaction.deferReply({ ephemeral: true });
             const keyString = interaction.fields.getTextInputValue('key_string');
 
             try {
-                const res = await axios.post(`${API_URL}/admin/list-keys`, { adminSecret: senha });
+                const res = await axios.post(`${API_URL}/admin/list-keys`, { adminSecret: ADMIN_SECRET });
                 const keyInfo = res.data.keys.find(k => k.key === keyString);
 
                 if (!keyInfo) return interaction.editReply({ content: '❌ Key não encontrada no banco de dados.' });
+
+                // Formata a lista de HWIDs para mostrar a String (Ex: 05818958d2dff25e)
+                const listaHwids = keyInfo.hwids && keyInfo.hwids.length > 0 
+                    ? keyInfo.hwids.map(h => `\`${h}\``).join('\n') 
+                    : 'Nenhum HWID vinculado';
 
                 const embed = new EmbedBuilder()
                     .setTitle('⚙️ Gerenciamento de Key')
                     .setColor('#dc2626')
                     .addFields(
-                        { name: 'Identificação', value: `\`${keyInfo.key}\`` },
-                        { name: 'Expiração', value: keyInfo.expires, inline: true },
-                        { name: 'HWIDs', value: `${keyInfo.hwids.length} / ${keyInfo.maxHwids}`, inline: true }
+                        { name: '🔑 Identificação', value: `\`${keyInfo.key}\``, inline: false },
+                        { name: '⏱️ Expiração', value: keyInfo.expires, inline: true },
+                        { name: '📊 HWIDs (Qtd)', value: `${keyInfo.hwids.length} / ${keyInfo.maxHwids}`, inline: true },
+                        { name: '💻 Lista de HWIDs', value: listaHwids, inline: false }
                     );
+
+                // SE A SUA API DO RENDER FORNECER OS DADOS DO ROBLOX, ELES SERÃO EXIBIDOS AQUI
+                if (keyInfo.robloxUsername) {
+                    embed.addFields(
+                        { name: '👤 Usuário', value: keyInfo.robloxUsername || 'Desconhecido', inline: true },
+                        { name: '⏳ Idade da Conta', value: `${keyInfo.accountAge || 0} dias`, inline: true },
+                        { name: '🎮 Place ID', value: keyInfo.placeId ? `\`${keyInfo.placeId}\`` : 'N/A', inline: true }
+                    );
+                    
+                    // Se tiver o ID do usuário, busca a imagem da cabeça no Roblox
+                    if (keyInfo.robloxUserId) {
+                        embed.setThumbnail(`https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${keyInfo.robloxUserId}&size=150x150&format=Png&isCircular=false`);
+                    }
+                }
 
                 const row = new ActionRowBuilder().addComponents(
                     new ButtonBuilder().setCustomId(`reset_hwid_${keyInfo.key}`).setLabel('Resetar Todos HWIDs').setStyle(ButtonStyle.Secondary).setEmoji('🔌'),
@@ -203,7 +214,7 @@ client.on('interactionCreate', async interaction => {
             await interaction.deferReply({ ephemeral: true });
             const hwidString = interaction.fields.getTextInputValue('hwid_string');
             try {
-                await axios.post(`${API_URL}/admin/ban-hwid`, { adminSecret: senha, hwid: hwidString });
+                await axios.post(`${API_URL}/admin/ban-hwid`, { adminSecret: ADMIN_SECRET, hwid: hwidString });
                 await interaction.editReply({ content: `🔨 HWID \`${hwidString}\` banido com sucesso.` });
             } catch (e) { await interaction.editReply({ content: '❌ Erro ao banir HWID.' }); }
         }
