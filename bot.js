@@ -5,7 +5,7 @@ const {
 const axios = require('axios');
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
-const API_URL = process.env.BASE_URL || "https://multihub-api-ljf7.onrender.com"; 
+const API_URL = "https://multihub-api-ljf7.onrender.com"; 
 const ROLE_REQUIRED = "</> Lord";
 
 // O bot agora pega a senha mestra diretamente das variáveis de ambiente do Render
