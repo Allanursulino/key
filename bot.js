@@ -56,7 +56,7 @@ client.on('interactionCreate', async interaction => {
             activeSessions.set(interaction.user.id, senha);
 
             const keys = res.data.keys;
-            const keysAtivas = keys.filter(k => !k.isExpired).length;[cite: 1]
+            const keysAtivas = keys.filter(k => !k.isExpired).length;
 
             const embed = new EmbedBuilder()
                 .setTitle('🛡️ MULTIHUB MANAGER - CONSOLE')
@@ -117,7 +117,7 @@ client.on('interactionCreate', async interaction => {
             await interaction.showModal(modal);
         }
 
-        // MODAL: Banir HWID Globalmente[cite: 1]
+        // MODAL: Banir HWID Globalmente
         if (interaction.customId === 'abrir_banir_hwid') {
             const modal = new ModalBuilder().setCustomId('modal_banir_hwid').setTitle('Banir HWID');
             const hwidInput = new TextInputBuilder().setCustomId('hwid_string').setLabel('Identificador do HWID').setStyle(TextInputStyle.Short).setRequired(true);
@@ -125,7 +125,7 @@ client.on('interactionCreate', async interaction => {
             await interaction.showModal(modal);
         }
 
-        // AÇÃO DIRETA: Resetar HWID de uma Key[cite: 1]
+        // AÇÃO DIRETA: Resetar HWID de uma Key
         if (interaction.customId.startsWith('reset_hwid_')) {
             const targetKey = interaction.customId.replace('reset_hwid_', '');
             await interaction.deferReply({ ephemeral: true });
@@ -135,7 +135,7 @@ client.on('interactionCreate', async interaction => {
             } catch (e) { await interaction.editReply({ content: '❌ Erro ao resetar HWID.' }); }
         }
 
-        // AÇÃO DIRETA: Deletar uma Key[cite: 1]
+        // AÇÃO DIRETA: Deletar uma Key
         if (interaction.customId.startsWith('del_key_')) {
             const targetKey = interaction.customId.replace('del_key_', '');
             await interaction.deferReply({ ephemeral: true });
@@ -153,7 +153,7 @@ client.on('interactionCreate', async interaction => {
         const senha = activeSessions.get(interaction.user.id);
         if (!senha) return interaction.reply({ content: '⚠️ Sua sessão expirou.', ephemeral: true });
 
-        // SUBMIT: Gerar Key[cite: 1]
+        // SUBMIT: Gerar Key
         if (interaction.customId === 'modal_gerar_key') {
             await interaction.deferReply({ ephemeral: true });
             const horas = parseInt(interaction.fields.getTextInputValue('horas'));
@@ -169,7 +169,7 @@ client.on('interactionCreate', async interaction => {
             } catch (e) { await interaction.editReply({ content: '❌ Erro na API.' }); }
         }
 
-        // SUBMIT: Buscar Key e Mostrar Opções de Gerenciamento[cite: 1]
+        // SUBMIT: Buscar Key e Mostrar Opções de Gerenciamento
         if (interaction.customId === 'modal_buscar_key') {
             await interaction.deferReply({ ephemeral: true });
             const keyString = interaction.fields.getTextInputValue('key_string');
@@ -198,7 +198,7 @@ client.on('interactionCreate', async interaction => {
             } catch (e) { await interaction.editReply({ content: '❌ Erro ao buscar dados da key.' }); }
         }
 
-        // SUBMIT: Banir HWID[cite: 1]
+        // SUBMIT: Banir HWID
         if (interaction.customId === 'modal_banir_hwid') {
             await interaction.deferReply({ ephemeral: true });
             const hwidString = interaction.fields.getTextInputValue('hwid_string');
