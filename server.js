@@ -367,3 +367,4 @@ async function generateLink(session, id) {
 }
 
 app.listen(PORT, () => console.log(`Rodando na porta ${PORT}`));
+require('./bot.js');
