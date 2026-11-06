@@ -22,6 +22,7 @@ const connectDB = async () => {
             return;
         }
         await mongoose.connect(process.env.MONGO_URI, {
+            dbName: 'KeySystem',
             serverSelectionTimeoutMS: 5000,
             socketTimeoutMS: 45000,
         });
